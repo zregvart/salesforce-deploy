@@ -1,0 +1,182 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<groupId>try</groupId>
+	<artifactId>salesforce-deploy</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>properties-maven-plugin</artifactId>
+				<version>1.0.0</version>
+				<executions>
+					<execution>
+						<phase>pre-integration-test</phase>
+						<goals>
+							<goal>read-project-properties</goal>
+						</goals>
+						<configuration>
+							<files>
+								<file>${basedir}/test-salesforce-login.properties</file>
+							</files>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
+				<artifactId>maven-assembly-plugin</artifactId>
+				<version>2.6</version>
+				<configuration>
+					<descriptor>src/test/it/package-assembly.xml</descriptor>
+				</configuration>
+				<executions>
+					<execution>
+						<id>salesforce-package</id>
+						<phase>pre-integration-test</phase>
+						<goals>
+							<goal>single</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>build-helper-maven-plugin</artifactId>
+				<version>1.12</version>
+				<executions>
+					<execution>
+						<id>bsh-property</id>
+						<phase>pre-integration-test</phase>
+						<goals>
+							<goal>bsh-property</goal>
+						</goals>
+						<configuration>
+							<properties>
+								<property>package_zip</property>
+							</properties>
+							<source>
+								import java.util.Base64;
+								import java.nio.file.Files;
+								import java.nio.file.Paths;
+
+								package_zip_path=project.getBuild().getDirectory()
+								+"/"+project.getArtifactId()
+								+"-"+project.getVersion()
+								+"-salesforce-package.zip";
+
+								package_zip =
+								Base64.getEncoder().encodeToString(Files.readAllBytes(Paths.get(package_zip_path,
+								new String[0])));
+							</source>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.cxf</groupId>
+				<artifactId>cxf-invoke-plugin</artifactId>
+				<version>3.1.8</version>
+				<executions>
+					<execution>
+						<id>login</id>
+						<phase>pre-integration-test</phase>
+						<goals>
+							<goal>invoke-soap</goal>
+						</goals>
+						<configuration>
+							<wsdl>file://${project.basedir}/src/wsdl/partner.wsdl</wsdl>
+							<namespace>urn:partner.soap.sforce.com</namespace>
+							<serviceName>SforceService</serviceName>
+							<operation>login</operation>
+							<request>
+								<login xmlns="urn:partner.soap.sforce.com">
+									<username>${salesforce.username}</username>
+									<password>${salesforce.password}</password>
+								</login>
+							</request>
+							<properties>
+								<metadataEndpoint>//*[local-name() = 'metadataServerUrl']</metadataEndpoint>
+								<salesforceSessionId>//*[local-name() = 'sessionId']</salesforceSessionId>
+							</properties>
+						</configuration>
+					</execution>
+					<execution>
+						<id>deploy</id>
+						<phase>pre-integration-test</phase>
+						<goals>
+							<goal>invoke-soap</goal>
+						</goals>
+						<configuration>
+							<wsdl>file://${project.basedir}/src/wsdl/metadata.wsdl</wsdl>
+							<endpoint>${metadataEndpoint}</endpoint>
+							<namespace>http://soap.sforce.com/2006/04/metadata</namespace>
+							<serviceName>MetadataService</serviceName>
+							<operation>deploy</operation>
+							<headers>
+								<SessionHeader xmlns="http://soap.sforce.com/2006/04/metadata">
+									<sessionId>${salesforceSessionId}</sessionId>
+								</SessionHeader>
+							</headers>
+							<request>
+								<deploy xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+									xmlns="http://soap.sforce.com/2006/04/metadata">
+									<ZipFile>${package_zip}</ZipFile>
+									<DeployOptions>
+										<allowMissingFiles>false</allowMissingFiles>
+										<autoUpdatePackage>false</autoUpdatePackage>
+										<checkOnly>false</checkOnly>
+										<ignoreWarnings>false</ignoreWarnings>
+										<performRetrieve>false</performRetrieve>
+										<purgeOnDelete>false</purgeOnDelete>
+										<rollbackOnError>true</rollbackOnError>
+										<singlePackage>true</singlePackage>
+										<testLevel xsi:nil="true" />
+									</DeployOptions>
+								</deploy>
+							</request>
+							<properties>
+								<deployProcessId>//*[local-name() = 'id']</deployProcessId>
+							</properties>
+						</configuration>
+					</execution>
+					<execution>
+						<id>wait-deploy-success</id>
+						<phase>pre-integration-test</phase>
+						<goals>
+							<goal>invoke-soap</goal>
+						</goals>
+						<configuration>
+							<wsdl>file://${project.basedir}/src/wsdl/metadata.wsdl</wsdl>
+							<endpoint>${metadataEndpoint}</endpoint>
+							<namespace>http://soap.sforce.com/2006/04/metadata</namespace>
+							<serviceName>MetadataService</serviceName>
+							<operation>checkDeployStatus</operation>
+							<headers>
+								<SessionHeader xmlns="http://soap.sforce.com/2006/04/metadata">
+									<sessionId>${salesforceSessionId}</sessionId>
+								</SessionHeader>
+							</headers>
+							<request>
+								<checkDeployStatus xmlns="http://soap.sforce.com/2006/04/metadata">
+									<asyncProcessId>${deployProcessId}</asyncProcessId>
+									<includeDetails>true</includeDetails>
+								</checkDeployStatus>
+							</request>
+							<repeatInterval>1000</repeatInterval>
+							<repeatUntil>boolean(//*[local-name() = 'status' and text() !=
+								'Succeeded'])</repeatUntil>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-failsafe-plugin</artifactId>
+				<version>2.19.1</version>
+			</plugin>
+		</plugins>
+	</build>
+</project>
